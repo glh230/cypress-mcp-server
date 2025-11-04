@@ -1,0 +1,40 @@
+// Example Cypress configuration file
+// This should be placed in your Cypress project root
+
+import { defineConfig } from 'cypress';
+
+export default defineConfig({
+  e2e: {
+    setupNodeEvents(on, config) {
+      // Implement node event listeners here
+      // This is useful for plugins and custom commands
+      
+      // Example: Custom task for database cleanup
+      on('task', {
+        log(message) {
+          console.log(message);
+          return null;
+        },
+      });
+    },
+    baseUrl: 'http://localhost:3000',
+    viewportWidth: 1280,
+    viewportHeight: 720,
+    defaultCommandTimeout: 4000,
+    requestTimeout: 5000,
+    responseTimeout: 30000,
+    video: true,
+    screenshotOnRunFailure: true,
+    specPattern: 'cypress/e2e/**/*.cy.{js,jsx,ts,tsx}',
+    supportFile: 'cypress/support/e2e.js',
+  },
+  
+  component: {
+    devServer: {
+      framework: 'create-react-app',
+      bundler: 'webpack',
+    },
+    specPattern: 'src/**/*.cy.{js,jsx,ts,tsx}',
+  },
+});
+

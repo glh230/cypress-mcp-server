@@ -1,0 +1,51 @@
+{
+  "name": "cypress-mcp-server",
+  "version": "1.0.0",
+  "description": "Model Context Protocol (MCP) server for Cypress, enabling AI-powered test automation in Cursor",
+  "main": "src/index.js",
+  "type": "module",
+  "bin": {
+    "cypress-mcp-server": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "lint": "eslint src/**/*.js",
+    "format": "prettier --write \"src/**/*.js\" \"tests/**/*.js\""
+  },
+  "keywords": [
+    "cypress",
+    "mcp",
+    "model-context-protocol",
+    "cursor",
+    "ai",
+    "testing",
+    "automation",
+    "e2e"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "cypress": "^13.7.0",
+    "winston": "^3.11.0",
+    "yaml": "^2.3.4",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "eslint": "^8.55.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.1.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/cypress-mcp-server.git"
+  }
+}
+
