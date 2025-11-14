@@ -386,12 +386,18 @@ class CypressMCPServer {
 // Export the class for testing
 export { CypressMCPServer };
 
-// Start the server - MCP servers are typically run directly via stdio
-// Only start if not being imported as a module (for testing)
-if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID) {
+// Start the server - MCP servers communicate via stdio
+// Always start when run directly (not when imported for testing)
+const isMainModule = import.meta.url === `file://${process.argv[1]}` || 
+                     process.argv[1]?.endsWith('index.js') ||
+                     process.argv[1]?.includes('cypress-mcp-server');
+
+if (isMainModule && process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID) {
   const server = new CypressMCPServer();
   server.run().catch((error) => {
-    logger.error('Failed to start server:', error);
+    // Can't use logger here as it might write to stdout
+    // Write to stderr instead (MCP uses stdout for protocol)
+    process.stderr.write(`Failed to start Cypress MCP Server: ${error.message}\n`);
     process.exit(1);
   });
 }

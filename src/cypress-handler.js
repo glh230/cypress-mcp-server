@@ -1,9 +1,32 @@
-import cypress from 'cypress';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
+import { promisify } from 'util';
 import config from './config.js';
 import logger from './logger.js';
+
+const readFile = promisify(fs.readFile);
+const writeFile = promisify(fs.writeFile);
+const readdir = promisify(fs.readdir);
+const stat = promisify(fs.stat);
+
+// Lazy load Cypress - check if it's available
+let cypressAvailable = null; // null = not checked yet, true/false = checked
+let cypressModule = null;
+
+async function checkCypressAvailability() {
+  if (cypressAvailable !== null) return cypressAvailable;
+  
+  try {
+    cypressModule = await import('cypress');
+    cypressAvailable = true;
+    return true;
+  } catch (error) {
+    cypressAvailable = false;
+    return false;
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,112 +74,127 @@ class CypressHandler {
   }
 
   /**
-   * Run Cypress tests
+   * Run Cypress tests using child process to avoid blocking MCP stdio
    */
   async runTests(options = {}) {
+    const isAvailable = await checkCypressAvailability();
+    if (!isAvailable) {
+      throw new Error('Cypress is not installed. Please install it with: npm install cypress --save-dev');
+    }
+
     const cypressConfig = config.getCypressConfig();
     const runId = `run_${Date.now()}`;
+    const projectPath = options.project || cypressConfig.projectPath || process.cwd();
 
-    const runOptions = {
-      headless: options.headless ?? cypressConfig.headless,
-      browser: options.browser ?? cypressConfig.browser,
-      spec: options.spec,
-      config: {
-        baseUrl: options.baseUrl ?? cypressConfig.baseUrl,
-        viewportWidth: options.viewportWidth ?? cypressConfig.viewportWidth,
-        viewportHeight: options.viewportHeight ?? cypressConfig.viewportHeight,
-        defaultCommandTimeout: options.defaultCommandTimeout ?? cypressConfig.defaultCommandTimeout,
-        requestTimeout: options.requestTimeout ?? cypressConfig.requestTimeout,
-        responseTimeout: options.responseTimeout ?? cypressConfig.responseTimeout,
-        ...options.config,
-      },
-      env: options.env || {},
-      project: options.project || cypressConfig.projectPath,
+    // Build Cypress CLI arguments
+    const args = ['run'];
+    
+    if (options.headless !== false && cypressConfig.headless !== false) {
+      args.push('--headless');
+    }
+    
+    if (options.browser || cypressConfig.browser) {
+      args.push('--browser', options.browser || cypressConfig.browser);
+    }
+    
+    if (options.spec) {
+      args.push('--spec', options.spec);
+    }
+
+    // Build config object for Cypress
+    const cypressConfigObj = {
+      baseUrl: options.baseUrl || cypressConfig.baseUrl,
+      viewportWidth: options.viewportWidth || cypressConfig.viewportWidth,
+      viewportHeight: options.viewportHeight || cypressConfig.viewportHeight,
+      defaultCommandTimeout: options.defaultCommandTimeout || cypressConfig.defaultCommandTimeout,
+      requestTimeout: options.requestTimeout || cypressConfig.requestTimeout,
+      responseTimeout: options.responseTimeout || cypressConfig.responseTimeout,
+      ...options.config,
     };
 
-    // Remove undefined values
-    Object.keys(runOptions).forEach(key => {
-      if (runOptions[key] === undefined) {
-        delete runOptions[key];
-      }
+    // Write config to temp file if needed
+    const configPath = path.join(projectPath, 'cypress.config.js');
+    const hasConfigFile = fs.existsSync(configPath) || fs.existsSync(path.join(projectPath, 'cypress.json'));
+
+    logger.info(`Starting Cypress run: ${runId}`, { args, projectPath });
+
+    return new Promise((resolve, reject) => {
+      // Use npx cypress to run in separate process
+      const cypressProcess = spawn('npx', ['cypress', ...args], {
+        cwd: projectPath,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          ...(options.env || {}),
+          ...(cypressConfigObj.baseUrl ? { CYPRESS_baseUrl: cypressConfigObj.baseUrl } : {}),
+        },
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      cypressProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      cypressProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      cypressProcess.on('close', (code) => {
+        // Parse Cypress output to extract results
+        // This is a simplified version - in production you'd want more robust parsing
+        const success = code === 0;
+        
+        const result = {
+          runId,
+          success,
+          exitCode: code,
+          stdout: stdout.substring(0, 1000), // Limit output size
+          stderr: stderr.substring(0, 1000),
+          message: success ? 'Tests completed successfully' : 'Tests failed',
+        };
+
+        this.testResults.set(runId, result);
+        logger.info(`Cypress run completed: ${runId}`, { success, code });
+
+        if (success) {
+          resolve(result);
+        } else {
+          reject(new Error(`Cypress tests failed with exit code ${code}: ${stderr.substring(0, 200)}`));
+        }
+      });
+
+      cypressProcess.on('error', (error) => {
+        logger.error(`Cypress process error: ${runId}`, error);
+        reject(new Error(`Failed to start Cypress: ${error.message}`));
+      });
     });
-
-    logger.info(`Starting Cypress run: ${runId}`, runOptions);
-
-    try {
-      const result = await cypress.run(runOptions);
-      
-      this.testResults.set(runId, {
-        runId,
-        status: result.status,
-        startedTestsAt: result.startedTestsAt,
-        endedTestsAt: result.endedTestsAt,
-        totalDuration: result.totalDuration,
-        totalSuites: result.totalSuites,
-        totalTests: result.totalTests,
-        totalPassed: result.totalPassed,
-        totalFailed: result.totalFailed,
-        totalPending: result.totalPending,
-        totalSkipped: result.totalSkipped,
-        runs: result.runs,
-      });
-
-      logger.info(`Cypress run completed: ${runId}`, {
-        status: result.status,
-        totalTests: result.totalTests,
-        totalPassed: result.totalPassed,
-        totalFailed: result.totalFailed,
-      });
-
-      return {
-        runId,
-        success: result.status === 'finished' && result.totalFailed === 0,
-        ...this.testResults.get(runId),
-      };
-    } catch (error) {
-      logger.error(`Cypress run failed: ${runId}`, error);
-      throw error;
-    }
   }
 
   /**
    * Open Cypress Test Runner (for debugging)
+   * Note: This won't work in headless MCP context, but provides instructions
    */
   async openCypress(options = {}) {
-    const cypressConfig = config.getCypressConfig();
-
-    const openOptions = {
-      browser: options.browser ?? cypressConfig.browser,
-      config: {
-        baseUrl: options.baseUrl ?? cypressConfig.baseUrl,
-        ...options.config,
-      },
-      env: options.env || {},
-      project: options.project || cypressConfig.projectPath,
-    };
-
-    // Remove undefined values
-    Object.keys(openOptions).forEach(key => {
-      if (openOptions[key] === undefined) {
-        delete openOptions[key];
-      }
-    });
-
-    logger.info('Opening Cypress Test Runner', openOptions);
-
-    try {
-      // Note: cypress.open() doesn't return a promise in the same way
-      // This is mainly for documentation/planning purposes
-      await cypress.open(openOptions);
-      
-      return {
-        success: true,
-        message: 'Cypress Test Runner opened',
-      };
-    } catch (error) {
-      logger.error('Failed to open Cypress Test Runner', error);
-      throw error;
+    const isAvailable = await checkCypressAvailability();
+    if (!isAvailable) {
+      throw new Error('Cypress is not installed. Please install it with: npm install cypress --save-dev');
     }
+
+    const cypressConfig = config.getCypressConfig();
+    const projectPath = options.project || cypressConfig.projectPath || process.cwd();
+
+    // In MCP/headless context, we can't open a GUI
+    // Return instructions instead
+    return {
+      success: false,
+      message: 'Cypress Test Runner cannot be opened in headless MCP context',
+      instructions: `To open Cypress Test Runner manually, run:
+cd ${projectPath}
+npx cypress open`,
+      projectPath,
+    };
   }
 
   /**
@@ -172,7 +210,7 @@ class CypressHandler {
     try {
       let code = testCode;
       if (testFile) {
-        code = fs.readFileSync(testFile, 'utf-8');
+        code = await readFile(testFile, 'utf-8');
       }
 
       // Basic validation - check for common Cypress syntax
@@ -235,7 +273,7 @@ class CypressHandler {
 `;
 
     if (outputPath) {
-      fs.writeFileSync(outputPath, testTemplate, 'utf-8');
+      await writeFile(outputPath, testTemplate, 'utf-8');
       logger.info(`Test file generated: ${outputPath}`);
     }
 
@@ -278,16 +316,17 @@ class CypressHandler {
     }
 
     const screenshots = [];
-    const files = fs.readdirSync(screenshotsDir, { recursive: true });
+    const files = await readdir(screenshotsDir, { recursive: true });
 
     for (const file of files) {
       const fullPath = path.join(screenshotsDir, file);
-      if (fs.statSync(fullPath).isFile() && /\.(png|jpg|jpeg)$/i.test(file)) {
+      const fileStat = await stat(fullPath);
+      if (fileStat.isFile() && /\.(png|jpg|jpeg)$/i.test(file)) {
         if (!runId || file.includes(runId) || !testPath || file.includes(testPath)) {
           screenshots.push({
             path: fullPath,
             relativePath: path.relative(projectPath, fullPath),
-            size: fs.statSync(fullPath).size,
+            size: fileStat.size,
           });
         }
       }
@@ -310,16 +349,17 @@ class CypressHandler {
     }
 
     const videos = [];
-    const files = fs.readdirSync(videosDir, { recursive: true });
+    const files = await readdir(videosDir, { recursive: true });
 
     for (const file of files) {
       const fullPath = path.join(videosDir, file);
-      if (fs.statSync(fullPath).isFile() && /\.mp4$/i.test(file)) {
+      const fileStat = await stat(fullPath);
+      if (fileStat.isFile() && /\.mp4$/i.test(file)) {
         if (!runId || file.includes(runId)) {
           videos.push({
             path: fullPath,
             relativePath: path.relative(projectPath, fullPath),
-            size: fs.statSync(fullPath).size,
+            size: fileStat.size,
           });
         }
       }
